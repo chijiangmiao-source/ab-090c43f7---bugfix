@@ -18,6 +18,11 @@ a + b
 let f = fun x -> x x;
 f
 `,
+  nested: `// 局部宏捕获外层读数：两次调用共享同一单位约束，应拒绝
+sensor len : m;
+sensor tim : s;
+let outer = fun r -> let h = fun x -> r + x in h len * h tim
+`,
   units: `sensor d : m;
 sensor t : s;
 let v = d / t;

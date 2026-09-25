@@ -157,6 +157,51 @@ async function httpChecks() {
   else fail('自应用错误缺少位置');
   if (JSON.stringify(o1.error) === JSON.stringify(o2.error)) pass('重复推断错误稳定一致');
   else fail('重复推断错误不一致（不稳定）');
+
+  // 场景四：嵌套局部宏捕获外层读数 —— 两次异单位调用必须被拒绝，并定位两处调用
+  const nestedSrc = [
+    'sensor len : m;',
+    'sensor tim : s;',
+    'let outer = fun r -> let h = fun x -> r + x in h len * h tim',
+    '',
+  ].join('\n');
+  const n1 = await postInfer(nestedSrc);
+  const n2 = await postInfer(nestedSrc);
+  if (!n1.ok && /单位冲突|单位不匹配/.test(n1.error.message)) {
+    pass(`嵌套局部宏矛盾脚本被拒绝：${n1.error.message}`);
+  } else if (n1.ok) {
+    fail(`嵌套局部宏矛盾脚本被错误推断成功：output=${n1.output}`);
+  } else {
+    fail(`嵌套局部宏错误信息异常：${n1.error && n1.error.message}`);
+  }
+  if (n1.error && n1.error.spans.length === 2) {
+    const covered = n1.error.spans.map((s) => nestedSrc.slice(s.start, s.end));
+    if (covered[0] === 'h len' && covered[1] === 'h tim') {
+      pass(`两次调用均被定位（${covered.join('、')}），位置一致`);
+    } else {
+      fail(`定位片段异常：${JSON.stringify(covered)}（期望 ["h len","h tim"]）`);
+    }
+    if (n1.error.spans[0].startLine === 3 && n1.error.spans[1].startLine === 3) {
+      pass(`调用行列定位一致（第 3 行：${n1.error.spans[0].startCol} 列、${n1.error.spans[1].startCol} 列）`);
+    } else {
+      fail(`调用行列定位异常：${JSON.stringify(n1.error.spans.map((s) => [s.startLine, s.startCol]))}`);
+    }
+  } else {
+    fail(`嵌套局部宏定位数量异常：${n1.error && n1.error.spans.length}（期望 2）`);
+  }
+  if (!('expressions' in n1) && !('generalizable' in n1) && !('output' in n1)) {
+    pass('嵌套局部宏失败响应不携带成功表达式、泛化变量与输出结论');
+  } else {
+    fail('嵌套局部宏失败响应仍保留成功结论');
+  }
+  if (JSON.stringify(n1.error) === JSON.stringify(n2.error)) pass('嵌套局部宏重复推断失败结果与定位一致');
+  else fail('嵌套局部宏重复推断结果不一致（不稳定）');
+
+  // 场景四补充：捕获读数但两次调用同单位 —— 应正常成立（回归不误报）
+  const nestedOkSrc = 'sensor len : m;\nlet outer = fun r -> let h = fun x -> r + x in h len * h len\n';
+  const nr = await postInfer(nestedOkSrc);
+  if (nr.ok && nr.output === 'num<m> -> num<m^2>') pass(`同单位双调用仍成立：${nr.output}`);
+  else fail(`同单位双调用回归异常：${JSON.stringify(nr).slice(0, 200)}`);
 }
 
 (async () => {

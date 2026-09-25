@@ -147,3 +147,50 @@ test('推断确定性：同一脚本两次结果完全一致', () => {
   const b = runInference(IDENTITY_SCRIPT);
   assert.deepEqual(a, b);
 });
+
+const NESTED_CAPTURE_SCRIPT = `// 局部宏捕获外层读数：两次调用把同一读数约束为 m 与 s
+sensor len : m;
+sensor tim : s;
+let outer = fun r -> let h = fun x -> r + x in h len * h tim
+`;
+
+test('嵌套局部宏：捕获外层读数时两次异单位调用被稳定拒绝并定位两处调用', () => {
+  const r = runInference(NESTED_CAPTURE_SCRIPT);
+  assert.equal(r.ok, false, '本应矛盾的脚本不能推断成功');
+  assert.match(r.error.message, /单位冲突|单位不匹配/);
+  assert.match(r.error.message, /m/);
+  assert.match(r.error.message, /s/);
+  // 定位两次调用 h len 与 h tim（共同约束同一份被捕获读数）
+  const covered = r.error.spans.map((s) => NESTED_CAPTURE_SCRIPT.slice(s.start, s.end));
+  assert.ok(covered.includes('h len'), `应定位第一次调用：${JSON.stringify(covered)}`);
+  assert.ok(covered.includes('h tim'), `应定位第二次调用：${JSON.stringify(covered)}`);
+  const lenSpan = r.error.spans.find((s) => NESTED_CAPTURE_SCRIPT.slice(s.start, s.end) === 'h len');
+  const timSpan = r.error.spans.find((s) => NESTED_CAPTURE_SCRIPT.slice(s.start, s.end) === 'h tim');
+  assert.ok(lenSpan.start < timSpan.start, '调用位置按源码顺序给出');
+  // 失败时清除本次请求的成功表达式、泛化变量与输出结论
+  assert.equal(r.expressions, undefined);
+  assert.equal(r.generalizable, undefined);
+  assert.equal(r.output, undefined);
+});
+
+test('嵌套局部宏：重复推断失败结果与定位完全一致', () => {
+  const a = runInference(NESTED_CAPTURE_SCRIPT);
+  const b = runInference(NESTED_CAPTURE_SCRIPT);
+  assert.deepEqual(a, b, '两次推断的失败结果须完全一致（稳定）');
+});
+
+test('嵌套局部宏：捕获读数但两次调用同单位仍成立（不误报）', () => {
+  const src = 'sensor len : m;\nlet outer = fun r -> let h = fun x -> r + x in h len * h len\n';
+  const r = runInference(src);
+  assert.equal(r.ok, true);
+  assert.equal(r.output, 'num<m> -> num<m^2>');
+});
+
+test('嵌套局部宏：未捕获外层读数的内层宏仍可泛化（保持 let 多态）', () => {
+  const src = 'sensor len : m;\nsensor tim : s;\nlet outer = fun r -> let h = fun x -> x in h len * h tim\n';
+  const r = runInference(src);
+  assert.equal(r.ok, true);
+  const h = r.generalizable.find((g) => g.name === 'h');
+  assert.ok(h, '内层 let 绑定仍应给出类型方案');
+  assert.match(h.scheme, /^∀ /, '未捕获外层读数的局部宏应被泛化');
+});
