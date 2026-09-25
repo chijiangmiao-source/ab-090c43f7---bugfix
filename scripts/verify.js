@@ -157,6 +157,40 @@ async function httpChecks() {
   else fail('自应用错误缺少位置');
   if (JSON.stringify(o1.error) === JSON.stringify(o2.error)) pass('重复推断错误稳定一致');
   else fail('重复推断错误不一致（不稳定）');
+
+  // 场景四：嵌套局部宏捕获外层读数 —— 两次调用共享同一份被捕获读数，
+  // 分别喂入长度与时间本应矛盾：须稳定拒绝、定位两次调用、且不保留任何成功结论。
+  const nestedSrc = [
+    'sensor rd : m;',
+    'let f = fun r -> let g = fun x -> r + x in g 1<m> * g 1<s>;',
+    'f rd',
+    '',
+  ].join('\n');
+  const n1 = await postInfer(nestedSrc);
+  const n2 = await postInfer(nestedSrc);
+  if (n1.ok === false) {
+    pass('嵌套局部宏捕获外层读数的矛盾脚本被拒绝');
+    if (/单位不匹配/.test(n1.error.message)) pass(`错误信息说明单位冲突：${n1.error.message.slice(0, 64)}…`);
+    else fail(`错误信息未说明单位冲突：${n1.error.message}`);
+    const covered = n1.error.spans.map((s) => nestedSrc.slice(s.start, s.end));
+    if (covered.includes('g 1<m>') && covered.includes('1<s>')) {
+      pass('两次相关调用位置均被定位（先前 g 1<m> 与本次 1<s>）');
+    } else {
+      fail(`调用位置定位异常：${JSON.stringify(covered)}（期望包含 g 1<m> 与 1<s>）`);
+    }
+    if (!('expressions' in n1) && !('generalizable' in n1) && !('output' in n1)) {
+      pass('出错响应不携带成功表达式 / 泛化变量 / 输出结论');
+    } else {
+      fail('出错响应仍保留成功结论（expressions/generalizable/output 之一存在）');
+    }
+    if (JSON.stringify(n1.error) === JSON.stringify(n2.error)) {
+      pass('两次 HTTP 推断的失败结果与定位一致');
+    } else {
+      fail(`两次 HTTP 推断结果不一致：\n${JSON.stringify(n1.error)}\n${JSON.stringify(n2.error)}`);
+    }
+  } else {
+    fail('嵌套局部宏矛盾脚本未被拒绝（推断不应成功）');
+  }
 }
 
 (async () => {

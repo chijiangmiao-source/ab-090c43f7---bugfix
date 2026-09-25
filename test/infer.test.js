@@ -147,3 +147,67 @@ test('推断确定性：同一脚本两次结果完全一致', () => {
   const b = runInference(IDENTITY_SCRIPT);
   assert.deepEqual(a, b);
 });
+
+// 嵌套局部宏捕获外层读数：该读数的单位变量被同一局部宏的两次调用共享，
+// 不得在 let 处泛化（否则两次实例化让 m 与 s 的矛盾约束同时成立）。
+const NESTED_CAPTURE_SCRIPT = [
+  '// 局部宏捕获外层读数 r：两次调用分别喂入长度与时间，本应矛盾',
+  'sensor rd : m;',
+  'let f = fun r -> let g = fun x -> r + x in g 1<m> * g 1<s>;',
+  'f rd',
+  '',
+].join('\n');
+
+test('嵌套局部宏捕获外层读数：单位矛盾被稳定拒绝', () => {
+  const r1 = runInference(NESTED_CAPTURE_SCRIPT);
+  const r2 = runInference(NESTED_CAPTURE_SCRIPT);
+  assert.equal(r1.ok, false);
+  assert.match(r1.error.message, /单位不匹配/);
+  assert.match(r1.error.message, /m 与 s|s 与 m/);
+  // 出错响应不得携带任何成功结论
+  assert.equal(r1.expressions, undefined, '不得保留成功表达式');
+  assert.equal(r1.generalizable, undefined, '不得保留泛化变量');
+  assert.equal(r1.output, undefined, '不得保留输出结论');
+  // 两次推断的失败结果与定位完全一致
+  assert.deepEqual(r1.error, r2.error, '重复推断的失败结果须一致');
+});
+
+test('嵌套局部宏冲突：定位先后两次相关调用位置', () => {
+  const r = runInference(NESTED_CAPTURE_SCRIPT);
+  assert.equal(r.ok, false);
+  const covered = r.error.spans.map((s) => NESTED_CAPTURE_SCRIPT.slice(s.start, s.end));
+  // 本次冲突实参（时间）与先前调用（长度）都要被定位
+  assert.ok(covered.includes('1<s>'), `应定位本次实参 1<s>，实际：${JSON.stringify(covered)}`);
+  assert.ok(covered.includes('g 1<m>'), `应定位先前调用 g 1<m>，实际：${JSON.stringify(covered)}`);
+  const prior = r.error.spans.find((s) => NESTED_CAPTURE_SCRIPT.slice(s.start, s.end) === 'g 1<m>');
+  assert.match(prior.label, /先前调用/);
+  // 定位稳定：行列可复算
+  assert.equal(prior.startLine, 3);
+});
+
+test('不捕获外层读数的局部宏仍按 let 多态泛化', () => {
+  const src = 'let f = fun r -> let g = fun x -> x in g 1<m> * g 1<s>;\n';
+  const r = runInference(src);
+  assert.equal(r.ok, true);
+  assert.equal(r.output, "'a -> num<m*s>");
+  const g = r.generalizable.find((x) => x.name === 'g');
+  assert.match(g.scheme, /^∀ /, '未捕获外层读数的局部宏仍可泛化');
+});
+
+test('捕获外层读数但两次调用同单位：合法并成功', () => {
+  const src = 'let f = fun r -> let g = fun x -> r + x in g 1<m> * g 1<m> in f 1<m>;\n';
+  const r = runInference(src);
+  assert.equal(r.ok, true);
+  assert.equal(r.output, 'num<m^2>');
+  const g = r.generalizable.find((x) => x.name === 'g');
+  assert.equal(g.quantified.length, 0, '捕获的单位变量不得泛化');
+});
+
+test('捕获具体 sensor 读数的局部宏跨单位复用同样被拒绝', () => {
+  const src = 'sensor a : m;\nlet g = fun x -> x + a in g 1<m> * g 1<s>\n';
+  const r = runInference(src);
+  assert.equal(r.ok, false);
+  assert.match(r.error.message, /单位不匹配/);
+  const covered = r.error.spans.map((s) => src.slice(s.start, s.end));
+  assert.ok(covered.includes('g 1<m>') && covered.includes('1<s>'));
+});

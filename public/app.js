@@ -18,6 +18,14 @@ a + b
 let f = fun x -> x x;
 f
 `,
+  nested: `// 局部宏 g 捕获外层读数 r：两次调用共享同一份量纲
+// 分别喂入长度与时间本应矛盾，必须拒绝（不得泛化被捕获读数）
+sensor rd : m;
+let f = fun r ->
+  let g = fun x -> r + x in
+  g 1<m> * g 1<s>;
+f rd
+`,
   units: `sensor d : m;
 sensor t : s;
 let v = d / t;

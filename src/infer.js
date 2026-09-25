@@ -19,11 +19,11 @@ class InferError extends Error {
  */
 
 function newTVar(ctx) {
-  return { kind: 'tvar', id: ++ctx.tvarSeq, instance: null, level: ctx.level };
+  return { kind: 'tvar', id: ++ctx.tvarSeq, instance: null };
 }
 
 function newUVar(ctx) {
-  return { id: ++ctx.uvarSeq, instance: null, level: ctx.level };
+  return { id: ++ctx.uvarSeq, instance: null };
 }
 
 function prune(t) {
@@ -41,20 +41,57 @@ function occursTVar(v, t) {
   return false;
 }
 
-function varsAboveLevel(t, level, tvars, uvars) {
+function collectFreeTVars(t, tvars) {
   t = prune(t);
   if (t.kind === 'tvar') {
-    if (t.level > level) tvars.add(t);
+    tvars.add(t);
     return;
   }
   if (t.kind === 'fun') {
-    varsAboveLevel(t.param, level, tvars, uvars);
-    varsAboveLevel(t.ret, level, tvars, uvars);
+    collectFreeTVars(t.param, tvars);
+    collectFreeTVars(t.ret, tvars);
+  }
+}
+
+function collectFreeUVars(t, uvars) {
+  t = prune(t);
+  if (t.kind === 'fun') {
+    collectFreeUVars(t.param, uvars);
+    collectFreeUVars(t.ret, uvars);
     return;
   }
-  for (const v of U.resolveMono(t.unit).vars.keys()) {
-    if (v.level > level) uvars.add(v);
+  if (t.kind === 'num') {
+    for (const v of U.resolveMono(t.unit).vars.keys()) uvars.add(v);
   }
+}
+
+/**
+ * 收集类型结构中直接引用的单位变量（不展开已绑定变量）。
+ * 用于在调用失败时回溯「同一单位变量先前在哪次调用被约束」。
+ */
+function collectRawUVars(t, out) {
+  t = prune(t);
+  if (t.kind === 'fun') {
+    collectRawUVars(t.param, out);
+    collectRawUVars(t.ret, out);
+    return;
+  }
+  if (t.kind === 'num') {
+    for (const v of t.unit.vars.keys()) out.add(v);
+  }
+}
+
+/** 类型环境中仍保持自由（未被各类型方案量化）的变量集合。 */
+function freeInEnv(env) {
+  const tvars = new Set();
+  const uvars = new Set();
+  for (const sc of env.values()) {
+    collectFreeTVars(sc.type, tvars);
+    collectFreeUVars(sc.type, uvars);
+    for (const v of sc.tvars) tvars.delete(v);
+    for (const v of sc.uvars) uvars.delete(v);
+  }
+  return { tvars, uvars };
 }
 
 /* ---------------- 命名与渲染（每次推断独立、确定） ---------------- */
@@ -134,10 +171,20 @@ function unify(ctx, t1, t2) {
 
 /* ---------------- 泛化与实例化 ---------------- */
 
-function generalize(ctx, type) {
+/**
+ * let 泛化：只量化「在类型中自由、但不在类型环境中自由」的变量。
+ * 被外层读数（如被局部宏捕获的函数参数 / sensor）约束的变量仍自由存在于
+ * 环境中，因而不得泛化——否则同一变量会在每次引用时被重新实例化，
+ * 让彼此矛盾的单位约束同时成立。
+ */
+function generalize(env, type) {
+  const { tvars: envT, uvars: envU } = freeInEnv(env);
   const tvars = new Set();
   const uvars = new Set();
-  varsAboveLevel(type, ctx.level, tvars, uvars);
+  collectFreeTVars(type, tvars);
+  collectFreeUVars(type, uvars);
+  for (const v of envT) tvars.delete(v);
+  for (const v of envU) uvars.delete(v);
   return { tvars: [...tvars], uvars: [...uvars], type };
 }
 
@@ -162,7 +209,6 @@ function instantiate(ctx, sc) {
 
 function newCtx() {
   return {
-    level: 0,
     tvarSeq: 0,
     uvarSeq: 0,
     R: createRenderCtx(),
@@ -170,7 +216,33 @@ function newCtx() {
     events: new Map(),
     nodeType: new Map(),
     lets: [],
+    // 单位变量 -> 首次将其约束的调用节点（用于回溯局部宏冲突的先前调用位置）
+    uvarOrigin: new Map(),
   };
+}
+
+/**
+ * 记录一次成功调用所触及的单位变量来源。真正的 let 泛化变量每次引用都会
+ * 实例化为全新对象，彼此独立；而未被泛化的单位变量（被外层读数约束、随
+ * 局部宏类型方案单态共享）在各次调用中是同一个对象，据此可在冲突时回溯
+ * 到先前的调用位置。
+ */
+function noteCallOrigins(ctx, tf, node) {
+  const vs = new Set();
+  collectRawUVars(tf, vs);
+  for (const v of vs) {
+    if (!ctx.uvarOrigin.has(v)) ctx.uvarOrigin.set(v, node);
+  }
+}
+
+function priorCallOrigin(ctx, tf, node) {
+  const vs = new Set();
+  collectRawUVars(tf, vs);
+  for (const v of vs) {
+    const origin = ctx.uvarOrigin.get(v);
+    if (origin && origin !== node) return origin;
+  }
+  return null;
 }
 
 function pushEvent(ctx, nodeId, msg) {
@@ -260,9 +332,10 @@ function dispatch(ctx, env, node) {
       try {
         unify(ctx, tf, { kind: 'fun', param: ta, ret: beta });
       } catch (e) {
-        if (e instanceof U.UnifyError) throw appError(ctx, node, e, tf, ta);
+        if (e instanceof U.UnifyError) throw appError(ctx, node, e, tf, ta, priorCallOrigin(ctx, tf, node));
         throw e;
       }
+      noteCallOrigins(ctx, tf, node);
       log(ctx, `调用结果类型：${renderType(R, beta)}`);
       return beta;
     }
@@ -284,14 +357,8 @@ function dispatch(ctx, env, node) {
     case 'binop':
       return inferBinop(ctx, env, node);
     case 'let': {
-      ctx.level++;
-      let tv;
-      try {
-        tv = inferNode(ctx, env, node.value);
-      } finally {
-        ctx.level--;
-      }
-      const sc = generalize(ctx, tv);
+      const tv = inferNode(ctx, env, node.value);
+      const sc = generalize(env, tv);
       ctx.lets.push({ name: node.name, scheme: sc });
       const qn = [...sc.tvars.map((v) => nameT(R, v)), ...sc.uvars.map((v) => nameU(R, v))];
       log(
@@ -369,7 +436,7 @@ function binopError(ctx, node, e, tl, tr) {
   return enrichUnify(ctx, e, node);
 }
 
-function appError(ctx, node, e, tf, ta) {
+function appError(ctx, node, e, tf, ta, priorCall) {
   const R = ctx.R;
   if (e.kind === 'occurs') {
     return new InferError(
@@ -384,9 +451,17 @@ function appError(ctx, node, e, tf, ta) {
     ]);
   }
   if (e.kind === 'unit-mismatch') {
+    const spans = [spanOf(node.arg, `本次实参：${renderType(R, ta)}`)];
+    let tail = '';
+    if (priorCall) {
+      // 局部宏捕获了外层读数：未泛化的单位变量由各次调用共享，先前调用已把它定死
+      spans.push(spanOf(priorCall, '先前调用：被捕获的外层读数已在此约束为冲突单位'));
+      tail = '局部宏捕获的外层读数只有一份量纲：两次调用共享同一单位变量，不能分别实例化为不同单位（let 泛化不得量化环境中仍自由的变量）。';
+    }
+    spans.push(spanOf(node.func, `形参要求：${renderType(R, tf)}`));
     return new InferError(
-      `单位不匹配：实参单位与形参要求不符（${renderMono(R, e.u1)} 与 ${renderMono(R, e.u2)}）`,
-      [spanOf(node.arg, `实参：${renderType(R, ta)}`), spanOf(node.func, `形参要求：${renderType(R, tf)}`)],
+      `单位不匹配：实参单位与形参要求不符（${renderMono(R, e.u1)} 与 ${renderMono(R, e.u2)}）。${tail}`,
+      spans,
     );
   }
   return enrichUnify(ctx, e, node);
