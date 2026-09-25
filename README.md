@@ -1,0 +1,53 @@
+# 校准宏类型推断台（Hindley–Milner + 单位量纲）
+
+同步辐射站将换算规则整理为可复用校准宏后，运行组可在网页录入带单位传感器声明的脚本，
+系统按 **Hindley–Milner 主类型规则** 完成解析与推断：
+
+- `let` 绑定在绑定处泛化为类型方案，**每次引用都重新实例化**（新鲜变量，互不影响）；
+- 加减只接受**相同单位**的数值，乘除**组合单位**（`m*s`、`m*s^-1`、`m^2`…）；
+- 数值字面量带单位变量（由上下文约束确定），也可写 `3.5<m/s>` 显式标注；
+- 无限类型（occurs check）、未定义标识、单位不符时，页面**定位冲突源码片段并清除旧结论**；
+- 点选成功表达式可查看**约束归并为该类型的依据**（实例化 / 合一 / 单位组合步骤）。
+
+## 脚本语法
+
+```
+sensor len : m;            // 传感器声明（单位：m、s、m/s、m^2、1 …）
+let id = fun x -> x;       // let 绑定（语句以 ; 结尾，最后一条可省略）
+let a = id len;            // 调用：并置 f x
+id len * id tim            // 表达式语句：+ - * / 与调用
+```
+
+表达式还包括：`let x = e1 in e2`、`fun x -> e`、数值（可带 `<单位>` 标注）、`//` 注释。
+
+## 运行
+
+```bash
+# Docker / Compose（页面服务 + verify 服务）
+docker compose up --build                    # 打开 http://localhost:8080
+APP_PORT=9090 docker compose up --build      # 端口可配置
+docker compose up --build --exit-code-from verify   # verify 执行完退出，退出码即验证结果
+
+# 本地开发
+npm start            # PORT=8080 node src/server.js
+npm test             # node --test test/
+npm run verify       # 构建检查 + 单元测试 + HTTP 复核（需服务已启动，APP_URL 可覆盖）
+```
+
+## 接口
+
+- `GET /`：校准宏页面
+- `POST /api/infer`：`{"source": "..."}` → 成功时返回各表达式推断类型、可泛化类型变量、
+  最终输出类型与逐节点约束依据；失败时返回错误消息与冲突源码区间（不携带旧结论）
+- `GET /healthz`：健康检查
+
+## verify 服务
+
+Compose 中的 `verify` 服务在 `app` 健康后启动，依次执行：
+
+1. **构建检查**：全部 JS 文件 `node --check` 语法校验、必备文件与 `package.json` 合法性；
+2. **代码测试**：`node --test` 运行推断引擎单元测试；
+3. **HTTP 复核**：恒等宏跨量纲复用（两份独立正确类型与输出类型）、
+   异单位相加（定位两个操作数、不保留成功结论）、自应用（稳定的无限类型错误与位置）。
+
+执行完退出，退出码 0 表示全部通过，非 0 表示存在失败项。

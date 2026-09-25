@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>校准宏类型推断台 · Hindley–Milner</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>同步辐射站 · 校准宏类型推断台</h1>
+  <p>Hindley–Milner 主类型推断 ｜ let 绑定按类型方案泛化、每次引用独立实例化 ｜ 加减要求相同单位，乘除组合单位</p>
+</header>
+<main>
+  <section class="panel">
+    <div class="panel-head">
+      <h2>脚本录入</h2>
+      <label>示例：
+        <select id="example">
+          <option value="identity">恒等宏跨量纲复用</option>
+          <option value="conflict">异单位相加（单位冲突）</option>
+          <option value="omega">自应用（无限类型）</option>
+          <option value="units">乘除组合单位</option>
+        </select>
+      </label>
+    </div>
+    <textarea id="source" rows="14" spellcheck="false"></textarea>
+    <div class="toolbar">
+      <button id="run" type="button">运行推断</button>
+      <span class="hint">语法：sensor 名 : 单位; ｜ let 名 = 表达式; ｜ fun x -&gt; 表达式 ｜ f x 调用 ｜ + - * / ｜ 数值可带单位 3.5&lt;m/s&gt; ｜ // 注释</span>
+    </div>
+  </section>
+
+  <section id="error-panel" class="panel hidden"></section>
+
+  <section id="results" class="panel hidden">
+    <h2>推断结果</h2>
+    <div class="output-line">最终输出类型：<code id="output-type" class="ty"></code></div>
+    <h3>可泛化类型变量（let 类型方案）</h3>
+    <div id="gen-vars"></div>
+    <h3>各表达式推断类型（点选查看约束归并依据）</h3>
+    <table>
+      <thead><tr><th>位置</th><th>表达式</th><th>种类</th><th>推断类型</th></tr></thead>
+      <tbody id="expr-rows"></tbody>
+    </table>
+    <div id="evidence" class="hidden"></div>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "name": "calibration-macro-inference",
+  "version": "1.0.0",
+  "private": true,
+  "description": "同步辐射站校准宏：带单位量纲的 Hindley–Milner 主类型推断页面",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/",
+    "verify": "node scripts/verify.js"
+  }
+}
